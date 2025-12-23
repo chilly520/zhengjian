@@ -2,201 +2,153 @@ import streamlit as st
 from PIL import Image, ImageOps
 from rembg import remove, new_session
 import io
+import gc  # 内存回收库，防止“超出资源限制”
 
-# --- 页面基础设置 ---
-st.set_page_config(page_title="专业版-证件照生成工具箱", layout="centered")
-st.title("🛠️ 专业版·证件照生成工具箱")
+# --- 1. 页面配置与内存清理 ---
+st.set_page_config(page_title="高清证件照工具箱", layout="centered")
+
+# 每次运行脚本前尝试清理一次内存
+gc.collect()
+
+st.title("📸 高清证件照专业工具箱")
 st.markdown("---")
 
-# --- 初始化 AI 模型会话 (仅在模式一使用) ---
-if 'rembg_session' not in st.session_state:
-    # 使用通用性更强的 ISNet 模型
-    st.session_state['rembg_session'] = new_session(model_name="isnet-general-use")
+# --- 2. 初始化 AI 模型会话 ---
+@st.cache_resource
+def get_rembg_session():
+    # 使用 isnet-general-use 模型，它在处理发丝边缘时相对更强
+    return new_session(model_name="isnet-general-use")
 
-# --- 侧边栏：模式选择与参数显示 ---
-st.sidebar.header("第一步：选择处理模式")
-# 添加单选按钮切换模式
+# --- 3. 侧边栏设置 ---
+st.sidebar.header("🚀 第一步：功能选择")
 mode = st.sidebar.radio(
-    "请根据你的素材情况选择：",
-    ("全自动 (AI 困难症增强版)", 
-     "半自动 (已抠好透明PNG换底)", 
-     "仅格式化 (成品图调整尺寸/大小)")
+    "根据素材选择模式：",
+    ("全自动 AI 模式 (发丝优化版)", 
+     "半自动模式 (上传透明PNG换底)", 
+     "仅格式化 (成品图调尺寸/体积)")
 )
 
 st.sidebar.markdown("---")
-st.sidebar.header("⚙️ 输出目标规格")
+st.sidebar.header("⚙️ 锁定规格 (已调优)")
 st.sidebar.info("""
-- **像素**：960 x 1280 (高清 3:4)
-- **背景**：标准证件蓝 (RGB: 67, 142, 219)
-- **DPI**：300
-- **文件大小**：500KB - 1MB (高质量)
-- **构图**：顶部 1/10 留空 (模式1&2生效)
+- **分辨率**: 960x1280 (3:4)
+- **打印精度**: 300 DPI
+- **目标体积**: 约 500KB
+- **构图**: 顶部 1/10 留空
 """)
 
-# --- 统一目标参数 ---
+# --- 4. 核心参数定义 ---
 TARGET_W, TARGET_H = 960, 1280
 BLUE_BG_COLOR = (67, 142, 219)
 
-# --- 主体逻辑 ---
-# 根据不同模式修改上传提示
-if mode == "全自动 (AI 困难症增强版)":
-    upload_tip = "上传原始照片 (尝试拯救发丝边缘)"
-elif mode == "半自动 (已抠好透明PNG换底)":
-    upload_tip = "上传已抠好的透明背景 PNG 图片"
+# --- 5. 文件上传 ---
+if mode == "全自动 AI 模式 (发丝优化版)":
+    tip = "上传原始照片 (背景越简单，AI 效果越好)"
+elif mode == "半自动模式 (上传透明PNG换底)":
+    tip = "上传你在 PS 中扣好的透明背景 PNG"
 else:
-    upload_tip = "上传已完成的蓝底证件照 (仅调整尺寸)"
+    tip = "上传已有的蓝底照片 (仅修正尺寸/大小)"
 
-uploaded_file = st.file_uploader(upload_tip, type=["jpg", "jpeg", "png"])
+uploaded_file = st.file_uploader(tip, type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
-    # 使用一个状态容器包裹处理过程
-    status_text = f"正在进行：{mode}..."
-    with st.status(status_text, expanded=True) as status:
+    with st.status(f"正在以 {mode} 处理中...", expanded=True) as status:
         
-        # 1. 加载图像
+        # 加载并统一转为 RGBA 模式
         input_image = Image.open(uploaded_file).convert("RGBA")
-        final_canvas = None # 初始化最终画布
+        final_canvas = None 
 
-        # ================= 模式分支处理 =================
-
-        # --- 模式一：全自动 AI 处理 ---
-        if mode == "全自动 (AI 困难症增强版)":
-            st.write("启动 AI 引擎，尝试捕捉发丝细节...")
-            # 启用 alpha matting 参数，专门用于处理毛发边缘
-            # based_mask=True 表示基于基础遮罩进行精细化
+        # --- 分模式逻辑处理 ---
+        if mode == "全自动 AI 模式 (发丝优化版)":
+            st.write("AI 正在计算发丝边缘...")
+            session = get_rembg_session()
+            # 开启 alpha_matting 尝试保留更多发丝细节
             no_bg_image = remove(
                 input_image, 
-                session=st.session_state['rembg_session'],
+                session=session,
                 alpha_matting=True,
                 alpha_matting_foreground_threshold=240,
-                alpha_matting_background_threshold=10,
-                alpha_matting_erode_structure_size=10
+                alpha_matting_background_threshold=10
             )
             
-            # 进入标准构图流程
-            st.write("正在应用标准构图 (顶部留空 1/10)...")
+            st.write("正在应用 1/10 构图标准...")
             final_canvas = Image.new("RGB", (TARGET_W, TARGET_H), BLUE_BG_COLOR)
-            
             orig_w, orig_h = no_bg_image.size
             aspect = orig_w / orig_h
             top_gap = int(TARGET_H * 0.1)
             t_person_h = TARGET_H - top_gap
             t_person_w = int(t_person_h * aspect)
-            # 宽度补偿
+            
             if t_person_w < TARGET_W:
                 t_person_w = TARGET_W
                 t_person_h = int(t_person_w / aspect)
             
             resized_person = no_bg_image.resize((t_person_w, t_person_h), Image.Resampling.LANCZOS)
-            paste_x = (TARGET_W - t_person_w) // 2
-            paste_y = TARGET_H - t_person_h
-            
-            final_canvas.paste(resized_person, (paste_x, paste_y), resized_person)
+            final_canvas.paste(resized_person, ((TARGET_W - t_person_w) // 2, TARGET_H - t_person_h), resized_person)
 
-
-        # --- 模式二：半自动 (已抠好PNG) ---
-        elif mode == "半自动 (已抠好透明PNG换底)":
-            # 检查是否真的是PNG且有透明通道
-            if input_image.format != 'PNG' and 'A' not in input_image.getbands():
-                 st.error("错误：请确保上传的是背景透明的 PNG 文件。")
-                 st.stop()
-
-            st.write("检测到透明图层，跳过 AI 抠图...")
-            # 直接使用上传的透明图作为 no_bg_image
+        elif mode == "半自动模式 (上传透明PNG换底)":
+            st.write("直接应用构图标准...")
             no_bg_image = input_image
-            
-            # 进入标准构图流程 (同上)
-            st.write("正在应用标准构图 (顶部留空 1/10, 底部对齐)...")
             final_canvas = Image.new("RGB", (TARGET_W, TARGET_H), BLUE_BG_COLOR)
-            
             orig_w, orig_h = no_bg_image.size
             aspect = orig_w / orig_h
             top_gap = int(TARGET_H * 0.1)
             t_person_h = TARGET_H - top_gap
             t_person_w = int(t_person_h * aspect)
-             # 宽度补偿
+            
             if t_person_w < TARGET_W:
                 t_person_w = TARGET_W
                 t_person_h = int(t_person_w / aspect)
-
+            
             resized_person = no_bg_image.resize((t_person_w, t_person_h), Image.Resampling.LANCZOS)
-            paste_x = (TARGET_W - t_person_w) // 2
-            paste_y = TARGET_H - t_person_h
-            
-            final_canvas.paste(resized_person, (paste_x, paste_y), resized_person)
+            final_canvas.paste(resized_person, ((TARGET_W - t_person_w) // 2, TARGET_H - t_person_h), resized_person)
 
-
-        # --- 模式三：仅格式化 (成品图调整) ---
-        elif mode == "仅格式化 (成品图调整尺寸/大小)":
-            st.write("正在进行无损中心裁剪与缩放...")
-            # 不需要创建蓝底画布，直接处理原图
-            # 计算目标宽高比
-            target_aspect = TARGET_W / TARGET_H
-            
-            # 使用 PIL 的 ImageOps.fit 进行智能中心裁剪和缩放
-            # 它会自动保持比例填充 960x1280 的框，多余部分裁掉，不会拉伸变形
+        elif mode == "仅格式化 (成品图调尺寸/体积)":
+            st.write("正在进行无损中心裁剪...")
             final_canvas = ImageOps.fit(
                 input_image.convert("RGB"), 
                 (TARGET_W, TARGET_H), 
                 method=Image.Resampling.LANCZOS, 
-                centering=(0.5, 0.5) # (0.5, 0.5) 表示绝对中心对齐
+                centering=(0.5, 0.5)
             )
 
-        # ================= 公共输出流程 =================
-
-        # 质量与大小控制 (所有模式通用)
-        st.write("最终输出：优化清晰度与文件体积 (目标 > 500KB)...")
+        # --- 统一输出与体积优化 ---
+        st.write("正在优化文件体积与 DPI...")
         quality = 100
-        final_buffer = io.BytesIO()
+        output_buffer = io.BytesIO()
         
-        while quality > 50: # 最低降到50，保证质量
+        while quality > 40:
             temp_buffer = io.BytesIO()
-            # 统一写入 300 DPI
             final_canvas.save(temp_buffer, format="JPEG", quality=quality, dpi=(300, 300))
-            current_size = temp_buffer.tell()
-            
-            if current_size <= 1024 * 1024: # 小于 1MB
-                final_buffer = temp_buffer
-                # 只要大于 400KB 且质量够高就停止，防止过度压缩
-                if quality >= 90 and current_size >= 400 * 1024:
+            if temp_buffer.tell() <= 1000 * 1024: # 确保不超过 1MB
+                output_buffer = temp_buffer
+                if quality >= 95 and temp_buffer.tell() >= 400 * 1024:
                     break
-                # 如果是纯色图导致体积上不去，到 100 也停
                 if quality == 100:
                     break
-                # 正常情况找到最大可行质量后停止
-                if current_size < 1024 * 1024:
-                     break
+                break
             quality -= 2
             
-        status.update(label=f"{mode} - 处理完成！", state="complete", expanded=False)
+        status.update(label="处理完成！", state="complete", expanded=False)
 
-    # --- 结果展示区 ---
+    # --- 结果展示与下载 ---
     col1, col2 = st.columns(2)
     with col1:
-        st.image(uploaded_file, caption="上传的文件", use_container_width=True)
+        st.image(uploaded_file, caption="原始输入", use_container_width=True)
     with col2:
-        st.image(final_canvas, caption=f"最终输出 ({TARGET_W}x{TARGET_H})", use_container_width=True)
+        st.image(final_canvas, caption="960x1280 高清结果", use_container_width=True)
 
-    # --- 下载按钮 ---
     st.download_button(
-        label="🚀 下载最终证件照 (JPG)",
-        data=final_buffer.getvalue(),
-        file_name="CET_Final_Processed.jpg",
+        label="📥 下载高清证件照 (JPG)",
+        data=output_buffer.getvalue(),
+        file_name="CET_Photo_HD.jpg",
         mime="image/jpeg"
     )
     
-    final_size_kb = final_buffer.tell() // 1024
-    st.success(f"""
-    ✅ **{mode} 执行成功！**
-    - 📜 规格: {TARGET_W} x {TARGET_H} 像素
-    - 💾 大小: {final_size_kb} KB (符合要求)
-    - 🖨️ 精度: 300 DPI
-    """)
+    st.success(f"✅ 处理成功！大小: {output_buffer.tell()//1024} KB | 分辨率: 300 DPI")
 
-    # 针对不同模式的提示
-    if mode == "全自动 (AI 困难症增强版)":
-        if final_size_kb < 400:
-             st.warning("提示：由于画面纯色区域较多，文件体积较小，但已是最高清晰度，符合要求。")
-        st.info("💡 如果对 AI 边缘仍不满意，请使用 PS 抠出透明 PNG 后，切换到【半自动模式】上传。")
-    elif mode == "仅格式化 (成品图调整尺寸/大小)":
-         st.info("💡 此模式采用中心裁剪，请确保上传的原图中人像居中。")
+    # --- 关键：手动清理大变量并触发内存回收 ---
+    del input_image
+    if 'no_bg_image' in locals(): del no_bg_image
+    if 'final_canvas' in locals(): del final_canvas
+    gc.collect()
