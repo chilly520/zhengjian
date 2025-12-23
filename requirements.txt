@@ -1,4 +1,4 @@
 streamlit
-rembg
+rembg>=2.0.56
 pillow
 onnxruntime
